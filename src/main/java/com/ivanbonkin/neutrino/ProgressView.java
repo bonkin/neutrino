@@ -1,4 +1,4 @@
-package com.ivanbonkin.demo;
+package com.ivanbonkin.neutrino;
 
 import com.vaadin.flow.component.progressbar.ProgressBar;
 import com.vaadin.flow.spring.annotation.SpringComponent;

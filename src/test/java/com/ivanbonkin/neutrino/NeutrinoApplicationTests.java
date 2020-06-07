@@ -1,5 +1,6 @@
-package com.ivanbonkin.demo;
+package com.ivanbonkin.neutrino;
 
+import lombok.extern.slf4j.Slf4j;
 import net.fec.openrq.*;
 import net.fec.openrq.decoder.SourceBlockDecoder;
 import net.fec.openrq.decoder.SourceBlockState;
@@ -12,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
+@Slf4j
 @SpringBootTest
 class NeutrinoApplicationTests {
 
@@ -26,7 +28,6 @@ class NeutrinoApplicationTests {
         double loss = .6;
         FECParameters fecParams = FECParameters.newParameters(dataLen, symbSize, numSrcBlks);
 
-        // Source is 77, 77, 77, ..
         final byte[] data = new byte[fecParams.dataLengthAsInt()];
         Arrays.fill(data, (byte) 77);
 
@@ -39,9 +40,6 @@ class NeutrinoApplicationTests {
                 encodingPacketSource.writeTo(bb);
             }
 
-        /* THIS IS INCORRECT. NUM_SOURCE_SYMBOLS == sbEnc.numberOfSourceSymbols()
-        int numRepairSymbols = OpenRQ.minRepairSymbols(dataLen / numSrcBlks, symbolOverhead, loss);
-         */
             int numRepairSymbols = OpenRQ.minRepairSymbols(sbEnc.numberOfSourceSymbols(), symbolOverhead, loss);
             if (numRepairSymbols > 0) {
                 for (EncodingPacket encodingPacketRepair : sbEnc.repairPacketsIterable(numRepairSymbols)) {
@@ -51,13 +49,6 @@ class NeutrinoApplicationTests {
         }
 
         bb.flip();
-
-        // Corrupt first source byte
-        // bb.put(8, (byte) 88);
-
-        /*
-         * Decode
-         */
 
         ArrayDataDecoder decoder = OpenRQ.newDecoder(fecParams, symbolOverhead);
 
@@ -78,7 +69,7 @@ class NeutrinoApplicationTests {
                 decState = latestBlockDecoder.putEncodingPacket(pkt);
                 if (decState.equals(SourceBlockState.DECODING_FAILURE))
                     abort = true;
-                System.out.println("SB # " + pkt.sourceBlockNumber() + " packet#=" + packNum
+                log.info("SB # " + pkt.sourceBlockNumber() + " packet#=" + packNum
                         + " type=" + pkt.symbolType() + " state = " + decState);
             }
 

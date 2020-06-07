@@ -1,4 +1,4 @@
-package com.ivanbonkin.demo;
+package com.ivanbonkin.neutrino;
 
 import net.fec.openrq.parameters.FECParameters;
 
@@ -7,7 +7,7 @@ import static net.fec.openrq.parameters.ParameterChecker.*;
 public class DiodeParameters {
 
     // Fixed value for the symbol size
-    private static final int SYMBOL_SIZE = 1500 - 20 - 8; // UDP-Ipv4 payload length
+    public static final int SYMBOL_SIZE = 1500 - 20 - 8; // UDP-Ipv4 payload length
 
     // The maximum allowed data length, given the parameter above
     public static final long MAX_DATA_LEN = maxAllowedDataLength(SYMBOL_SIZE);

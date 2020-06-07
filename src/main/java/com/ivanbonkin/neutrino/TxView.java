@@ -1,8 +1,11 @@
-package com.ivanbonkin.demo;
+package com.ivanbonkin.neutrino;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.RateLimiter;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.progressbar.ProgressBar;
+import com.vaadin.flow.component.upload.SucceededEvent;
 import com.vaadin.flow.component.upload.Upload;
 import com.vaadin.flow.component.upload.receivers.MemoryBuffer;
 import com.vaadin.flow.spring.annotation.SpringComponent;
@@ -28,9 +31,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 
-import static com.ivanbonkin.demo.DiodeParameters.MESSAGE_SIZE;
-import static com.ivanbonkin.demo.Receiver.LOSS_RATIO;
-import static com.ivanbonkin.demo.Receiver.SYMBOL_OVERHEAD;
+import static com.ivanbonkin.neutrino.DiodeParameters.MESSAGE_SIZE;
+import static com.ivanbonkin.neutrino.DiodeParameters.SYMBOL_SIZE;
+import static com.ivanbonkin.neutrino.Receiver.LOSS_RATIO;
+import static com.ivanbonkin.neutrino.Receiver.SYMBOL_OVERHEAD;
+import static java.util.Objects.requireNonNull;
 
 @Slf4j
 @UIScope
@@ -46,13 +51,15 @@ public class TxView extends Div {
 
         MemoryBuffer buffer = new MemoryBuffer();
         Upload upload = new Upload(buffer);
-        upload.addSucceededListener(event -> {
+        upload.addSucceededListener((SucceededEvent event) -> {
 
             log.info(event.getMIMEType());
             log.info(event.getFileName());
             log.info("Size: " + humanReadableByteCountBin(event.getContentLength()));
 
+
             try {
+                sendHeader(new Header(event.getContentLength(), event.getFileName(), event.getMIMEType()));
                 Enumeration<InputStream> enumeration = Collections.enumeration(Arrays.asList(
                         new ByteArrayInputStream((buffer.getFileData().getFileName() + "/").getBytes()),
                         buffer.getInputStream()
@@ -75,6 +82,35 @@ public class TxView extends Div {
         add(upload);
     }
 
+    private void sendHeader(Header header) throws JsonProcessingException {
+        int msgSize = SYMBOL_SIZE;
+        byte[] headerBytes = new ObjectMapper().writeValueAsBytes(header);
+        byte[] paddedBytes = new byte[msgSize];
+        System.arraycopy(requireNonNull(headerBytes), 0, paddedBytes, msgSize - headerBytes.length, headerBytes.length);
+
+        FECParameters parameters = DiodeParameters.getParameters(msgSize);
+        ArrayDataEncoder dataEnc = OpenRQ.newEncoder(paddedBytes, parameters);
+
+        final int numSourceBlocks = dataEnc.numberOfSourceBlocks();
+        for (int sb = 0; sb < numSourceBlocks; sb++) {
+            SourceBlockEncoder sbEnc = dataEnc.sourceBlock(sb);
+
+            // send all source symbols
+            final int numSourceSymbols = sbEnc.numberOfSourceSymbols();
+            final int numRepairSymbols = OpenRQ.minRepairSymbols(numSourceSymbols, SYMBOL_OVERHEAD, LOSS_RATIO);
+
+            for (int ss = 0; ss < numSourceSymbols; ss++) {
+                EncodingPacket packet = sbEnc.sourcePacket(ss);
+                handler.handleMessage(MessageBuilder.withPayload(packet.asArray()).build());
+            }
+            // send nr repair symbols
+            for (EncodingPacket pac : sbEnc.repairPacketsIterable(numRepairSymbols)) {
+                handler.handleMessage(MessageBuilder.withPayload(pac.asArray()).build());
+            }
+        }
+
+
+    }
 
     void pushUdp(ArrayDataEncoder dataEnc, ProgressBar progressBar) {
         final int numSourceBlocks = dataEnc.numberOfSourceBlocks();

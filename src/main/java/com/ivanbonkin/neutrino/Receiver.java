@@ -1,5 +1,6 @@
-package com.ivanbonkin.demo;
+package com.ivanbonkin.neutrino;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import net.fec.openrq.ArrayDataDecoder;
 import net.fec.openrq.EncodingPacket;
@@ -15,7 +16,8 @@ import org.springframework.stereotype.Service;
 import java.io.File;
 import java.io.IOException;
 
-import static com.ivanbonkin.demo.DiodeParameters.MESSAGE_SIZE;
+import static com.ivanbonkin.neutrino.DiodeParameters.MESSAGE_SIZE;
+import static com.ivanbonkin.neutrino.DiodeParameters.SYMBOL_SIZE;
 import static net.fec.openrq.decoder.SourceBlockState.DECODED;
 import static net.fec.openrq.decoder.SourceBlockState.DECODING_FAILURE;
 
@@ -27,7 +29,7 @@ public class Receiver {
     public static final double LOSS_RATIO = .1;
 
     ArrayDataDecoder decoder;
-    boolean abort = false, alreadySaved = false;
+    volatile boolean abort = false, alreadySaved = false;
     Parsed<EncodingPacket> latestParse;
     SourceBlockDecoder latestBlockDecoder;
     EncodingPacket pkt;
@@ -40,7 +42,41 @@ public class Receiver {
         packNum = 0;
     }
 
+    private boolean parseHeader(Message<byte[]> message) {
+        FECParameters headerFecParams = DiodeParameters.getParameters(SYMBOL_SIZE);
+        ArrayDataDecoder headerDecoder = OpenRQ.newDecoder(headerFecParams, SYMBOL_OVERHEAD);
+        Parsed<EncodingPacket> parsePacket = headerDecoder.parsePacket(message.getPayload(), false);
+        if (parsePacket.isValid()) {
+            SourceBlockDecoder blockDecoder = headerDecoder.sourceBlock(0);
+            if (DECODED == blockDecoder.putEncodingPacket(parsePacket.value())) {
+                byte[] dataArray = headerDecoder.dataArray();
+                int padSize = 0;
+                while (dataArray[padSize] == (byte)0) {
+                    padSize++;
+                }
+                byte[] payload = new byte[dataArray.length - padSize];
+                System.arraycopy(dataArray, padSize, payload, 0, payload.length);
+                try {
+                    Header header = new ObjectMapper().createParser(payload).readValueAs(Header.class);
+                    log.info("Parsed header {}", header);
+                    FECParameters bodyFecParams = DiodeParameters.getParameters(header.getBodySize());
+                    decoder = OpenRQ.newDecoder(bodyFecParams, SYMBOL_OVERHEAD);
+                    packNum = 0;
+                    alreadySaved = false;
+                    abort = false;
+                    return true;
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return false;
+    }
+
     synchronized public void handleMessage(Message<byte[]> message) {
+
+        if (parseHeader(message)) {
+            return;
+        }
 
         byte[] data = message.getPayload();
 
@@ -57,9 +93,9 @@ public class Receiver {
                     log.warn("Decoding failure occurred");
                     abort = true;
                 }
-                log.info("SB #{} packet#={} type={} state={}", pkt.sourceBlockNumber(), packNum, pkt.symbolType(), decState);
+                log.debug("SB #{} packet#={} type={} state={}", pkt.sourceBlockNumber(), packNum, pkt.symbolType(), decState);
                 if (decState == DECODED) {
-                    System.out.println("File decoded. Saving...");
+                    log.info("File decoded. Saving...");
                 }
             }
 
@@ -88,7 +124,7 @@ public class Receiver {
                     }
                 }
                 FileUtils.writeByteArrayToFile(file, dataArray, fileNameLength, dataArray.length - fileNameLength);
-                System.out.println("Written file " + file.getAbsolutePath());
+                log.info("Received and saved file {}", file.getAbsolutePath());
                 alreadySaved = true;
 
             } catch (IOException e) {
