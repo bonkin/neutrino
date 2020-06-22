@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.ivanbonkin</groupId>
     <artifactId>neutrino</artifactId>
-    <version>0.1</version>
+    <version>0.2</version>
     <name>neutrino</name>
     <description>A simple data diode app</description>
 
@@ -72,6 +72,12 @@
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
             <version>29.0-jre</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>16.0.2</version>
         </dependency>
 
     </dependencies>

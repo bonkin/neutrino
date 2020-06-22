@@ -13,13 +13,14 @@ import org.apache.commons.io.FileUtils;
 import org.springframework.messaging.Message;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.io.File;
 import java.io.IOException;
 
-import static com.ivanbonkin.neutrino.DiodeParameters.MESSAGE_SIZE;
 import static com.ivanbonkin.neutrino.DiodeParameters.SYMBOL_SIZE;
 import static net.fec.openrq.decoder.SourceBlockState.DECODED;
 import static net.fec.openrq.decoder.SourceBlockState.DECODING_FAILURE;
+
 
 @Slf4j
 @Service
@@ -36,8 +37,9 @@ public class Receiver {
     SourceBlockState decState;
     int packNum;
 
+    @PostConstruct
     public void reset() {
-        FECParameters fecParams = DiodeParameters.getParameters(MESSAGE_SIZE);
+        FECParameters fecParams = DiodeParameters.getParameters(SYMBOL_SIZE);
         decoder = OpenRQ.newDecoder(fecParams, SYMBOL_OVERHEAD);
         packNum = 0;
     }
@@ -57,7 +59,7 @@ public class Receiver {
                 byte[] payload = new byte[dataArray.length - padSize];
                 System.arraycopy(dataArray, padSize, payload, 0, payload.length);
                 try {
-                    Header header = new ObjectMapper().createParser(payload).readValueAs(Header.class);
+                    Header header = new ObjectMapper().readValue(payload, Header.class);
                     log.info("Parsed header {}", header);
                     FECParameters bodyFecParams = DiodeParameters.getParameters(header.getBodySize());
                     decoder = OpenRQ.newDecoder(bodyFecParams, SYMBOL_OVERHEAD);

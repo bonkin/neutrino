@@ -1,10 +1,10 @@
 package com.ivanbonkin.neutrino;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.RateLimiter;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.progressbar.ProgressBar;
+import com.vaadin.flow.component.select.Select;
 import com.vaadin.flow.component.upload.SucceededEvent;
 import com.vaadin.flow.component.upload.Upload;
 import com.vaadin.flow.component.upload.receivers.MemoryBuffer;
@@ -17,21 +17,22 @@ import net.fec.openrq.OpenRQ;
 import net.fec.openrq.encoder.SourceBlockEncoder;
 import net.fec.openrq.parameters.FECParameters;
 import org.apache.commons.compress.utils.IOUtils;
+import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.integration.ip.udp.UnicastSendingMessageHandler;
-import org.springframework.integration.support.MessageBuilder;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.SequenceInputStream;
+import java.net.InetAddress;
+import java.net.SocketException;
+import java.net.UnknownHostException;
 import java.text.CharacterIterator;
 import java.text.StringCharacterIterator;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 
-import static com.ivanbonkin.neutrino.DiodeParameters.MESSAGE_SIZE;
 import static com.ivanbonkin.neutrino.DiodeParameters.SYMBOL_SIZE;
 import static com.ivanbonkin.neutrino.Receiver.LOSS_RATIO;
 import static com.ivanbonkin.neutrino.Receiver.SYMBOL_OVERHEAD;
@@ -42,24 +43,35 @@ import static java.util.Objects.requireNonNull;
 @SpringComponent
 public class TxView extends Div {
 
-    static final UnicastSendingMessageHandler handler = new UnicastSendingMessageHandler("localhost", 9600);
-
     @SuppressWarnings("UnstableApiUsage")
     static final RateLimiter rateLimiter = RateLimiter.create(20_000_000. / (1 << 16));
 
-    public TxView(@Autowired Receiver receiver, @Autowired ProgressView progressView) {
+    private final Transmitter transmitter;
+    private final Select<InetAddress> interfaceSelector;
+
+    public TxView(@Autowired Transmitter transmitter, @Autowired ProgressView progressView) throws SocketException, UnknownHostException {
+
+        this.transmitter = transmitter;
 
         MemoryBuffer buffer = new MemoryBuffer();
         Upload upload = new Upload(buffer);
+
+        InetAddress[] broadcastAddresses = transmitter.getBroadcastAddresses();
+        interfaceSelector = new Select<>(broadcastAddresses);
+        interfaceSelector.setValue(broadcastAddresses[0]);
+        interfaceSelector.setAutofocus(true);
+
         upload.addSucceededListener((SucceededEvent event) -> {
 
             log.info(event.getMIMEType());
             log.info(event.getFileName());
             log.info("Size: " + humanReadableByteCountBin(event.getContentLength()));
 
-
             try {
-                sendHeader(new Header(event.getContentLength(), event.getFileName(), event.getMIMEType()));
+                sendHeader(
+                        new Header(event.getContentLength(), event.getFileName(), event.getMIMEType()),
+                        interfaceSelector.getValue()
+                );
                 Enumeration<InputStream> enumeration = Collections.enumeration(Arrays.asList(
                         new ByteArrayInputStream((buffer.getFileData().getFileName() + "/").getBytes()),
                         buffer.getInputStream()
@@ -69,9 +81,6 @@ public class TxView extends Div {
                 FECParameters parameters = DiodeParameters.getParameters(bytes.length);
                 ArrayDataEncoder dataEnc = OpenRQ.newEncoder(bytes, parameters);
 
-                MESSAGE_SIZE = bytes.length;
-                receiver.reset();
-
                 new Thread(() -> pushUdp(dataEnc, progressView)).start();
                 log.debug("Thread started...");
 
@@ -79,16 +88,18 @@ public class TxView extends Div {
                 log.error("Send error", e);
             }
         });
+
         add(upload);
+        add(interfaceSelector);
     }
 
-    private void sendHeader(Header header) throws JsonProcessingException {
+    private void sendHeader(@NotNull Header header, @NotNull InetAddress inetAddress) throws IOException {
         int msgSize = SYMBOL_SIZE;
         byte[] headerBytes = new ObjectMapper().writeValueAsBytes(header);
         byte[] paddedBytes = new byte[msgSize];
         System.arraycopy(requireNonNull(headerBytes), 0, paddedBytes, msgSize - headerBytes.length, headerBytes.length);
 
-        FECParameters parameters = DiodeParameters.getParameters(msgSize);
+        FECParameters parameters = DiodeParameters.getParameters(SYMBOL_SIZE);
         ArrayDataEncoder dataEnc = OpenRQ.newEncoder(paddedBytes, parameters);
 
         final int numSourceBlocks = dataEnc.numberOfSourceBlocks();
@@ -101,11 +112,11 @@ public class TxView extends Div {
 
             for (int ss = 0; ss < numSourceSymbols; ss++) {
                 EncodingPacket packet = sbEnc.sourcePacket(ss);
-                handler.handleMessage(MessageBuilder.withPayload(packet.asArray()).build());
+                transmitter.broadcast(packet.asArray(), inetAddress);
             }
             // send nr repair symbols
-            for (EncodingPacket pac : sbEnc.repairPacketsIterable(numRepairSymbols)) {
-                handler.handleMessage(MessageBuilder.withPayload(pac.asArray()).build());
+            for (EncodingPacket packet : sbEnc.repairPacketsIterable(numRepairSymbols)) {
+                transmitter.broadcast(packet.asArray(), inetAddress);
             }
         }
 
@@ -125,20 +136,24 @@ public class TxView extends Div {
         final int numSourceSymbols = sbEnc.numberOfSourceSymbols();
         final int numRepairSymbols = OpenRQ.minRepairSymbols(numSourceSymbols, SYMBOL_OVERHEAD, LOSS_RATIO);
 
-        for (int ss = 0; ss < numSourceSymbols; ss++) {
-            final double pbValue = ss;
-            getUI().ifPresent(ui -> ui.access(() ->
-                    progressBar.setValue(pbValue / numSourceSymbols)
-            ));
-            rateLimiter.acquire();
-            EncodingPacket packet = sbEnc.sourcePacket(ss);
-            handler.handleMessage(MessageBuilder.withPayload(packet.asArray()).build());
-        }
+        try {
+            for (int ss = 0; ss < numSourceSymbols; ss++) {
+                final double pbValue = ss;
+                getUI().ifPresent(ui -> ui.access(() ->
+                        progressBar.setValue(pbValue / numSourceSymbols)
+                ));
+                rateLimiter.acquire();
+                EncodingPacket packet = sbEnc.sourcePacket(ss);
+                transmitter.broadcast(packet.asArray(), interfaceSelector.getValue());
+            }
 
-        // send nr repair symbols
-        for (EncodingPacket pac : sbEnc.repairPacketsIterable(numRepairSymbols)) {
-            rateLimiter.acquire();
-            handler.handleMessage(MessageBuilder.withPayload(pac.asArray()).build());
+            // send nr repair symbols
+            for (EncodingPacket pac : sbEnc.repairPacketsIterable(numRepairSymbols)) {
+                rateLimiter.acquire();
+                transmitter.broadcast(pac.asArray(), interfaceSelector.getValue());
+            }
+        } catch (IOException e) {
+            log.error("Broadcast exception", e);
         }
     }
 

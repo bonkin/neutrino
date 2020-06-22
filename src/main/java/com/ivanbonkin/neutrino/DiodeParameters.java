@@ -23,6 +23,4 @@ public class DiodeParameters {
         return FECParameters.newParameters(dataLen, SYMBOL_SIZE, numSBs);
     }
 
-    public static volatile int MESSAGE_SIZE;
-
 }
